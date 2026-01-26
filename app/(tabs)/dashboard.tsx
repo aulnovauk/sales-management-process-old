@@ -146,7 +146,7 @@ export default function DashboardScreen() {
         <View style={styles.statsGrid}>
           <StatCard
             icon={<Calendar size={24} color={Colors.light.primary} />}
-            label="Total Works"
+            label="Total Tasks"
             value={stats.totalEvents.toString()}
             subtitle={`${stats.draftEvents} draft, ${stats.activeEvents} active`}
             color={Colors.light.primary}
@@ -179,7 +179,7 @@ export default function DashboardScreen() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Work Status Overview</Text>
+          <Text style={styles.sectionTitle}>Task Status Overview</Text>
           <View style={styles.eventStatusGrid}>
             <EventStatusBadge label="Draft" count={stats.draftEvents} color="#78909C" bg="#ECEFF1" />
             <EventStatusBadge label="Active" count={stats.activeEvents} color="#2E7D32" bg="#E8F5E9" />
@@ -192,13 +192,13 @@ export default function DashboardScreen() {
 
         {(stats.activeEventsList.length > 0 || stats.recentCompletedList.length > 0) && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Work Progress</Text>
+            <Text style={styles.sectionTitle}>Task Progress</Text>
             
             {stats.activeEventsList.length > 0 && (
               <View style={styles.progressSection}>
                 <View style={styles.progressSectionHeader}>
-                  <Text style={styles.progressSectionLabel}>Active Works</Text>
-                  <Text style={styles.progressSectionCount}>{stats.activeEventsList.length} works</Text>
+                  <Text style={styles.progressSectionLabel}>Active Tasks</Text>
+                  <Text style={styles.progressSectionCount}>{stats.activeEventsList.length} tasks</Text>
                 </View>
                 {(showAllActive ? stats.activeEventsList : stats.activeEventsList.slice(0, MAX_DISPLAYED_WORKS)).map(event => (
                   <EventProgressMeter 
@@ -274,7 +274,7 @@ export default function DashboardScreen() {
           <View style={styles.actionsGrid}>
             {['GM', 'CGM', 'DGM', 'AGM', 'SD_JTO'].includes(employee?.role || '') && (
               <ActionButton 
-                label="Create Work" 
+                label="Create Task" 
                 icon={<Calendar size={24} color={Colors.light.background} />} 
                 onPress={() => router.push('/create-event')}
               />
