@@ -42,7 +42,8 @@ console.log('Database connection initialized');
 
 Bun.serve({
   port,
-  hostname: 'localhost',
+  hostname: '0.0.0.0',
+  idleTimeout: 255,  // ← Added this line (255 seconds = 4+ minutes)
   async fetch(req) {
     const url = new URL(req.url);
     

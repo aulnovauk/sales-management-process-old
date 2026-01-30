@@ -15,7 +15,19 @@ export const employeesRouter = createTRPCRouter({
       let query = db.select().from(employees);
       
       const results = await query.orderBy(desc(employees.createdAt));
-      return results;
+      
+      // Apply correction factor for outstanding amounts
+      // Database values were imported with 100× inflation (10^9 instead of 10^7)
+      const CORRECTION_FACTOR = 100;
+      return results.map(employee => ({
+        ...employee,
+        outstandingFtth: employee.outstandingFtth 
+          ? (parseFloat(employee.outstandingFtth) / CORRECTION_FACTOR).toString() 
+          : employee.outstandingFtth,
+        outstandingLc: employee.outstandingLc 
+          ? (parseFloat(employee.outstandingLc) / CORRECTION_FACTOR).toString() 
+          : employee.outstandingLc,
+      }));
     }),
 
   getById: publicProcedure
@@ -23,7 +35,21 @@ export const employeesRouter = createTRPCRouter({
     .query(async ({ input }) => {
       console.log("Fetching employee by id:", input.id);
       const result = await db.select().from(employees).where(eq(employees.id, input.id));
-      return result[0] || null;
+      const employee = result[0] || null;
+      
+      // Apply correction factor for outstanding amounts
+      // Database values were imported with 100× inflation (10^9 instead of 10^7)
+      if (employee) {
+        const CORRECTION_FACTOR = 100;
+        if (employee.outstandingFtth) {
+          employee.outstandingFtth = (parseFloat(employee.outstandingFtth) / CORRECTION_FACTOR).toString();
+        }
+        if (employee.outstandingLc) {
+          employee.outstandingLc = (parseFloat(employee.outstandingLc) / CORRECTION_FACTOR).toString();
+        }
+      }
+      
+      return employee;
     }),
 
   getByEmail: publicProcedure
@@ -31,7 +57,20 @@ export const employeesRouter = createTRPCRouter({
     .query(async ({ input }) => {
       console.log("Fetching employee by email:", input.email);
       const result = await db.select().from(employees).where(eq(employees.email, input.email));
-      return result[0] || null;
+      const employee = result[0] || null;
+      
+      // Apply correction factor for outstanding amounts
+      if (employee) {
+        const CORRECTION_FACTOR = 100;
+        if (employee.outstandingFtth) {
+          employee.outstandingFtth = (parseFloat(employee.outstandingFtth) / CORRECTION_FACTOR).toString();
+        }
+        if (employee.outstandingLc) {
+          employee.outstandingLc = (parseFloat(employee.outstandingLc) / CORRECTION_FACTOR).toString();
+        }
+      }
+      
+      return employee;
     }),
 
   getByPhone: publicProcedure
@@ -39,7 +78,20 @@ export const employeesRouter = createTRPCRouter({
     .query(async ({ input }) => {
       console.log("Fetching employee by phone:", input.phone);
       const result = await db.select().from(employees).where(eq(employees.phone, input.phone));
-      return result[0] || null;
+      const employee = result[0] || null;
+      
+      // Apply correction factor for outstanding amounts
+      if (employee) {
+        const CORRECTION_FACTOR = 100;
+        if (employee.outstandingFtth) {
+          employee.outstandingFtth = (parseFloat(employee.outstandingFtth) / CORRECTION_FACTOR).toString();
+        }
+        if (employee.outstandingLc) {
+          employee.outstandingLc = (parseFloat(employee.outstandingLc) / CORRECTION_FACTOR).toString();
+        }
+      }
+      
+      return employee;
     }),
 
   create: publicProcedure
@@ -51,12 +103,33 @@ export const employeesRouter = createTRPCRouter({
       role: z.enum(['GM', 'CGM', 'DGM', 'AGM', 'SD_JTO', 'SALES_STAFF']),
       circle: z.enum(['ANDAMAN_NICOBAR', 'ANDHRA_PRADESH', 'ASSAM', 'BIHAR', 'CHHATTISGARH', 'GUJARAT', 'HARYANA', 'HIMACHAL_PRADESH', 'JAMMU_KASHMIR', 'JHARKHAND', 'KARNATAKA', 'KERALA', 'MADHYA_PRADESH', 'MAHARASHTRA', 'NORTH_EAST_I', 'NORTH_EAST_II', 'ODISHA', 'PUNJAB', 'RAJASTHAN', 'TAMIL_NADU', 'TELANGANA', 'UTTARAKHAND', 'UTTAR_PRADESH_EAST', 'UTTAR_PRADESH_WEST', 'WEST_BENGAL']),
       zone: z.string().min(1),
-      reportingOfficerId: z.string().uuid().optional(),
-      employeeNo: z.string().optional(),
+      reportingPersNo: z.string().uuid().optional(),
+      persNo: z.string().optional(),
       designation: z.string().min(1),
     }))
     .mutation(async ({ input }) => {
       console.log("Creating employee:", input.name);
+      
+      // Check for duplicate Pers Number
+      if (input.persNo) {
+        const existing = await db.select({ id: employees.id })
+          .from(employees)
+          .where(eq(employees.persNo, input.persNo));
+        
+        if (existing.length > 0) {
+          throw new Error("An account with this Pers Number already exists. Please login instead.");
+        }
+      }
+      
+      // Check for duplicate email
+      const existingEmail = await db.select({ id: employees.id })
+        .from(employees)
+        .where(eq(employees.email, input.email));
+      
+      if (existingEmail.length > 0) {
+        throw new Error("An account with this email already exists. Please login instead.");
+      }
+      
       const result = await db.insert(employees).values({
         name: input.name,
         email: input.email,
@@ -65,8 +138,8 @@ export const employeesRouter = createTRPCRouter({
         role: input.role,
         circle: input.circle,
         zone: input.zone,
-        reportingOfficerId: input.reportingOfficerId,
-        employeeNo: input.employeeNo,
+        reportingPersNo: input.reportingPersNo,
+        persNo: input.persNo,
         designation: input.designation,
       }).returning();
       
@@ -83,8 +156,8 @@ export const employeesRouter = createTRPCRouter({
       role: z.enum(['GM', 'CGM', 'DGM', 'AGM', 'SD_JTO', 'SALES_STAFF']).optional(),
       circle: z.enum(['ANDAMAN_NICOBAR', 'ANDHRA_PRADESH', 'ASSAM', 'BIHAR', 'CHHATTISGARH', 'GUJARAT', 'HARYANA', 'HIMACHAL_PRADESH', 'JAMMU_KASHMIR', 'JHARKHAND', 'KARNATAKA', 'KERALA', 'MADHYA_PRADESH', 'MAHARASHTRA', 'NORTH_EAST_I', 'NORTH_EAST_II', 'ODISHA', 'PUNJAB', 'RAJASTHAN', 'TAMIL_NADU', 'TELANGANA', 'UTTARAKHAND', 'UTTAR_PRADESH_EAST', 'UTTAR_PRADESH_WEST', 'WEST_BENGAL']).optional(),
       zone: z.string().min(1).optional(),
-      reportingOfficerId: z.string().uuid().optional().nullable(),
-      employeeNo: z.string().optional(),
+      reportingPersNo: z.string().uuid().optional().nullable(),
+      persNo: z.string().optional(),
       designation: z.string().min(1).optional(),
       isActive: z.boolean().optional(),
     }))
@@ -112,42 +185,53 @@ export const employeesRouter = createTRPCRouter({
 
   login: publicProcedure
     .input(z.object({
-      email: z.string().email(),
+      username: z.string().min(1),
       password: z.string(),
     }))
     .mutation(async ({ input }) => {
       try {
         console.log("=== LOGIN REQUEST RECEIVED ===");
-        console.log("Raw email input:", input.email);
+        console.log("Raw username input:", input.username);
         console.log("Password provided:", input.password ? "yes (" + input.password.length + " chars)" : "no");
         
-        const normalizedEmail = input.email.trim().toLowerCase();
-        console.log("Normalized email:", normalizedEmail);
+        const trimmedUsername = input.username.trim();
+        const isEmail = trimmedUsername.includes('@');
         
-        // Use ilike for case-insensitive exact match
-        console.log("Executing database query...");
-        const result = await db.select().from(employees)
-          .where(ilike(employees.email, normalizedEmail));
+        let employee = null;
         
-        console.log("Login query result count:", result.length);
-        
-        if (result.length === 0) {
-          // Log all emails for debugging
-          const allEmployees = await db.select({ email: employees.email, isActive: employees.isActive }).from(employees);
-          console.log("All registered emails in database:", JSON.stringify(allEmployees.map(e => ({ email: e.email, isActive: e.isActive }))));
-          throw new Error("Employee not found with email: " + normalizedEmail);
+        if (isEmail) {
+          const normalizedEmail = trimmedUsername.toLowerCase();
+          console.log("Login type: Email -", normalizedEmail);
+          
+          const result = await db.select().from(employees)
+            .where(ilike(employees.email, normalizedEmail));
+          
+          if (result.length > 0) {
+            employee = result[0];
+          }
+        } else {
+          console.log("Login type: Pers Number -", trimmedUsername);
+          
+          const result = await db.select().from(employees)
+            .where(eq(employees.persNo, trimmedUsername));
+          
+          if (result.length > 0) {
+            employee = result[0];
+          }
         }
         
-        const employee = result[0];
+        if (!employee) {
+          console.log("Employee not found with:", trimmedUsername);
+          throw new Error(isEmail ? "Email not found. Please register first." : "Employee Pers Number not found. Please contact administrator.");
+        }
+        
         console.log("Found employee ID:", employee.id, "name:", employee.name, "isActive:", employee.isActive);
         
-        // Check if employee is active (treat null as active)
         if (employee.isActive === false) {
           console.log("Employee account is deactivated:", employee.id);
           throw new Error("Account is deactivated. Please contact administrator.");
         }
         
-        // Verify password
         const storedPassword = employee.password || '';
         const inputPassword = input.password || '';
         console.log("Password check - stored length:", storedPassword.length, "input length:", inputPassword.length);
@@ -158,13 +242,53 @@ export const employeesRouter = createTRPCRouter({
         }
         
         console.log("Login successful for employee:", employee.id);
-        return employee;
+        
+        const needsChange = (employee as any).needsPasswordChange ?? false;
+        
+        return {
+          ...employee,
+          needsPasswordChange: needsChange,
+        };
       } catch (error: any) {
         console.error("=== LOGIN ERROR ===");
         console.error("Error message:", error?.message);
         console.error("Error stack:", error?.stack);
         throw error;
       }
+    }),
+
+  changePassword: publicProcedure
+    .input(z.object({
+      employeeId: z.string().uuid(),
+      currentPassword: z.string(),
+      newPassword: z.string().min(6, "Password must be at least 6 characters"),
+    }))
+    .mutation(async ({ input }) => {
+      console.log("=== CHANGE PASSWORD REQUEST ===");
+      
+      const result = await db.select().from(employees)
+        .where(eq(employees.id, input.employeeId));
+      
+      if (result.length === 0) {
+        throw new Error("Employee not found");
+      }
+      
+      const employee = result[0];
+      
+      if ((employee.password || '') !== input.currentPassword) {
+        throw new Error("Current password is incorrect");
+      }
+      
+      await db.update(employees)
+        .set({
+          password: input.newPassword,
+          needsPasswordChange: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(employees.id, input.employeeId));
+      
+      console.log("Password changed for employee:", input.employeeId);
+      return { success: true };
     }),
 
   getByCircle: publicProcedure
@@ -201,7 +325,7 @@ export const employeesRouter = createTRPCRouter({
       console.log("Fetching employee by Purse ID:", input.staffId);
       
       const masterRecord = await db.select().from(employeeMaster)
-        .where(eq(employeeMaster.purseId, input.staffId));
+        .where(eq(employeeMaster.persNo, input.staffId));
       
       if (!masterRecord[0]) {
         console.log("No master record found for Purse ID:", input.staffId);
@@ -223,7 +347,7 @@ export const employeesRouter = createTRPCRouter({
       if (result[0]) {
         return {
           ...result[0],
-          employeeNo: input.staffId,
+          persNo: input.staffId,
         };
       }
       return null;
@@ -237,7 +361,7 @@ export const employeesRouter = createTRPCRouter({
       
       const masterRecords = await db.select().from(employeeMaster)
         .where(and(
-          ilike(employeeMaster.purseId, `%${input.query}%`),
+          ilike(employeeMaster.persNo, `%${input.query}%`),
           isNotNull(employeeMaster.linkedEmployeeId)
         ));
       
@@ -256,7 +380,7 @@ export const employeesRouter = createTRPCRouter({
           const master = masterRecords.find(m => m.linkedEmployeeId === empId);
           results.push({
             ...emp[0],
-            employeeNo: master?.purseId || emp[0].employeeNo,
+            persNo: master?.persNo || emp[0].persNo,
           });
         }
       }
@@ -281,7 +405,7 @@ export const employeesRouter = createTRPCRouter({
         
         return {
           ...result[0],
-          employeeNo: masterRecord[0]?.purseId || result[0].employeeNo,
+          persNo: masterRecord[0]?.persNo || result[0].persNo,
         };
       }
       return null;

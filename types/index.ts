@@ -1,15 +1,6 @@
 export type UserRole = 'GM' | 'CGM' | 'DGM' | 'AGM' | 'SD_JTO' | 'SALES_STAFF';
 
-export type EventCategory = 
-  | 'Cultural' 
-  | 'Religious' 
-  | 'Sports' 
-  | 'Exhibition' 
-  | 'Fair'
-  | 'Festival'
-  | 'Agri-Tourism'
-  | 'Eco-Tourism'
-  | 'Trade/Religious';
+export type EventCategory = string;
 
 export type Circle = 
   | 'ANDAMAN_NICOBAR'
@@ -50,17 +41,19 @@ export type IssueStatus = 'OPEN' | 'IN_PROGRESS' | 'RESOLVED' | 'CLOSED';
 export interface Employee {
   id: string;
   name: string;
-  email: string;
-  phone: string;
+  email: string | null;
+  phone: string | null;
   password?: string;
   role: UserRole;
   circle: Circle;
   division: string;
   buildingName?: string;
   officeName?: string;
-  reportingOfficerId?: string;
-  employeeNo?: string;
+  reportingPersNo?: string;
+  persNo?: string;
   designation: string;
+  outstandingFtth?: string | null;
+  outstandingLc?: string | null;
   createdAt: string;
 }
 
@@ -86,6 +79,24 @@ export interface Event {
   createdAt: string;
   keyInsight?: string;
   status?: EventStatus;
+  teamMembers?: { persNo: string; name: string; designation: string | null }[];
+  creatorName?: string | null;
+  assigneeName?: string | null;
+  assigneeDesignation?: string | null;
+  simsSold?: number;
+  ftthSold?: number;
+  targetEb?: number;
+  targetLease?: number;
+  targetBtsDown?: number;
+  targetFtthDown?: number;
+  targetRouteFail?: number;
+  targetOfcFail?: number;
+  ebCompleted?: number;
+  leaseCompleted?: number;
+  btsDownCompleted?: number;
+  ftthDownCompleted?: number;
+  routeFailCompleted?: number;
+  ofcFailCompleted?: number;
 }
 
 export interface SalesReport {
