@@ -1,6 +1,6 @@
 import { pgTable, text, varchar, integer, timestamp, boolean, jsonb, pgEnum, uuid } from 'drizzle-orm/pg-core';
 
-export const userRoleEnum = pgEnum('user_role', ['GM', 'CGM', 'DGM', 'AGM', 'SD_JTO', 'SALES_STAFF']);
+export const userRoleEnum = pgEnum('user_role', ['ADMIN', 'GM', 'CGM', 'DGM', 'AGM', 'SD_JTO', 'SALES_STAFF']);
 
 export const circleEnum = pgEnum('bsnl_circle', [
   'ANDAMAN_NICOBAR', 'ANDHRA_PRADESH', 'ASSAM', 'BIHAR', 'CHHATTISGARH',
@@ -300,6 +300,15 @@ export const pushTokens = pgTable('push_tokens', {
   isActive: boolean('is_active').default(true).notNull(),
   lastUsedAt: timestamp('last_used_at'),
   failureCount: integer('failure_count').default(0).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+export const ftthOrderPending = pgTable('ftth_order_pending', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  persNo: varchar('pers_no', { length: 50 }).notNull(),
+  ba: varchar('ba', { length: 50 }).notNull(),
+  totalFtthOrdersPending: integer('total_ftth_orders_pending').default(0).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
