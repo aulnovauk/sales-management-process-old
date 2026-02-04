@@ -12,7 +12,7 @@
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#003366"
     },
     "ios": {
       "supportsTablet": false,
@@ -23,7 +23,8 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "app.rork.bsnl_sales_event_app"
+      "package": "app.rork.bsnl_sales_event_app",
+      "usesCleartextTraffic": true
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
@@ -33,6 +34,14 @@
         "expo-router",
         {
           "origin": "https://rork.com/"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
         }
       ],
       "expo-font",

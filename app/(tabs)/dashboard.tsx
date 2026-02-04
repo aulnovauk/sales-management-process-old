@@ -1,6 +1,6 @@
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions, Modal, FlatList, ActivityIndicator } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
-import { TrendingUp, Calendar, Users, Target, Package, AlertCircle, Settings, ChevronRight, Clock, CalendarCheck, AlertTriangle, IndianRupee, X, Hourglass, CircleCheck, CircleDot, Send, RotateCcw } from 'lucide-react-native';
+import { TrendingUp, Calendar, Users, Target, Package, AlertCircle, Settings, ChevronRight, Clock, CalendarCheck, AlertTriangle, IndianRupee, X, Hourglass, CircleCheck, CircleDot, Send, RotateCcw, Award, DollarSign, Server, Wifi } from 'lucide-react-native';
 import { useAuth } from '@/contexts/auth';
 import { useApp } from '@/contexts/app';
 import Colors from '@/constants/colors';
@@ -33,13 +33,16 @@ export default function DashboardScreen() {
       enabled: !!employee?.id,
       retry: 1,
       refetchOnWindowFocus: true,
-      refetchInterval: 10000,
-      staleTime: 5000,
+      refetchInterval: 5000,
+      staleTime: 0,
     }
   );
   
   const events: Event[] = useMemo(() => {
     if (!myEventsData) return [];
+    const totalSim = myEventsData.reduce((acc: number, e: any) => acc + (e.simSold || 0), 0);
+    const totalFtth = myEventsData.reduce((acc: number, e: any) => acc + (e.ftthSold || 0), 0);
+    console.log("Dashboard sales totals - SIM:", totalSim, "FTTH:", totalFtth, "from", myEventsData.length, "events");
     return myEventsData.map((e: any) => ({
       id: e.id,
       name: e.name,
@@ -98,6 +101,16 @@ export default function DashboardScreen() {
     { enabled: isManagementRole }
   );
 
+  const { data: kamEbGoldSummary } = trpc.admin.getKamEbGoldSummary.useQuery(
+    { userId: employee?.id || '' },
+    { enabled: !!employee?.id && isManagementRole }
+  );
+
+  const { data: oltSummary } = trpc.admin.getOltSummary.useQuery(
+    { userId: employee?.id || '' },
+    { enabled: !!employee?.id && isManagementRole }
+  );
+
   const { data: ftthPendingEmployeesData, isLoading: loadingFtthPendingEmployees, error: ftthPendingError } = trpc.ftthPending.getEmployeesWithPending.useQuery(
     { limit: 200 },
     { enabled: ftthPendingModalVisible && isManagementRole }
@@ -106,9 +119,13 @@ export default function DashboardScreen() {
   const stats = useMemo(() => {
     const myEvents = events;
     
-    const totalSimsSold = salesReports.reduce((acc, r) => acc + r.simsSold, 0);
+    // Calculate sales from live events data (from database via tRPC)
+    const totalSimsSold = myEvents.reduce((acc, e) => acc + (e.simsSold || 0), 0);
+    const totalFtthSold = myEvents.reduce((acc, e) => acc + (e.ftthSold || 0), 0);
+    
+    // Fallback to salesReports for activated counts if available
     const totalSimsActivated = salesReports.reduce((acc, r) => acc + r.simsActivated, 0);
-    const totalFtthLeads = salesReports.reduce((acc, r) => acc + r.ftthLeads, 0);
+    const totalFtthLeads = totalFtthSold;
     const totalFtthInstalled = salesReports.reduce((acc, r) => acc + r.ftthInstalled, 0);
     
     const today = new Date();
@@ -146,7 +163,14 @@ export default function DashboardScreen() {
       return endDate < today;
     });
 
-    const pendingIssues = issues.filter(i => i.status === 'OPEN' || i.status === 'IN_PROGRESS');
+    // Filter issues relevant to the current user
+    const myRelevantIssues = issues.filter(i => {
+      if (employee?.role === 'SALES_STAFF' || employee?.role === 'SD_JTO') {
+        return i.raisedBy === employee?.id;
+      }
+      return i.escalatedTo === employee?.id || i.raisedBy === employee?.id;
+    });
+    const pendingIssues = myRelevantIssues.filter(i => i.status === 'OPEN' || i.status === 'IN_PROGRESS');
 
     const simResources = resources.find(r => r.type === 'SIM' && r.circle === employee?.circle);
     const ftthResources = resources.find(r => r.type === 'FTTH' && r.circle === employee?.circle);
@@ -220,7 +244,7 @@ export default function DashboardScreen() {
             value={stats.simsSold.toString()}
             subtitle={`${stats.simsActivated} activated`}
             color={Colors.light.success}
-            onPress={() => router.push('/(tabs)/sales')}
+            onPress={() => router.push('/sim-sales-detail')}
           />
           <StatCard
             icon={<Target size={24} color={Colors.light.info} />}
@@ -228,7 +252,7 @@ export default function DashboardScreen() {
             value={stats.ftthLeads.toString()}
             subtitle={`${stats.ftthInstalled} installed`}
             color={Colors.light.info}
-            onPress={() => router.push('/(tabs)/sales')}
+            onPress={() => router.push('/ftth-sales-detail')}
           />
           <StatCard
             icon={<AlertCircle size={24} color={Colors.light.error} />}
@@ -310,6 +334,85 @@ export default function DashboardScreen() {
                     <Text style={[styles.outstandingCardActionText, { color: '#1565C0' }]}>View Details</Text>
                     <ChevronRight size={14} color="#1565C0" />
                   </View>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
+
+        {isManagementRole && (kamEbGoldSummary || oltSummary) && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Management Reports</Text>
+            <View style={styles.reportsRow}>
+              {kamEbGoldSummary && (kamEbGoldSummary.totalPersonnel > 0 || kamEbGoldSummary.totalLeads > 0) && (
+                <TouchableOpacity 
+                  style={styles.consolidatedReportCard}
+                  onPress={() => router.push('/kam-eb-gold-report')}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.reportCardHeader}>
+                    <View style={[styles.reportIconContainer, { backgroundColor: '#E3F2FD' }]}>
+                      <Award size={22} color="#1565C0" />
+                    </View>
+                    <Text style={styles.reportCardTitle}>KAM EB Gold</Text>
+                    <ChevronRight size={18} color="#1565C0" />
+                  </View>
+                  <View style={styles.reportMetricsRow}>
+                    <View style={styles.reportMetricItem}>
+                      <Target size={16} color="#1565C0" />
+                      <Text style={styles.reportMetricValue}>{kamEbGoldSummary.totalLeads.toLocaleString()}</Text>
+                      <Text style={styles.reportMetricLabel}>Leads</Text>
+                    </View>
+                    <View style={styles.reportMetricDivider} />
+                    <View style={styles.reportMetricItem}>
+                      <DollarSign size={16} color="#2E7D32" />
+                      <Text style={[styles.reportMetricValue, { color: '#2E7D32' }]}>{kamEbGoldSummary.totalLeadValueCrore >= 100 ? `${kamEbGoldSummary.totalLeadValueCrore.toFixed(0)}` : kamEbGoldSummary.totalLeadValueCrore.toFixed(1)} Cr</Text>
+                      <Text style={styles.reportMetricLabel}>Value</Text>
+                    </View>
+                    <View style={styles.reportMetricDivider} />
+                    <View style={styles.reportMetricItem}>
+                      <TrendingUp size={16} color="#7B1FA2" />
+                      <Text style={[styles.reportMetricValue, { color: '#7B1FA2' }]}>{kamEbGoldSummary.leadToBillCrore >= 100 ? `${kamEbGoldSummary.leadToBillCrore.toFixed(0)}` : kamEbGoldSummary.leadToBillCrore.toFixed(1)} Cr</Text>
+                      <Text style={styles.reportMetricLabel}>To Bill</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.reportSubtext}>{kamEbGoldSummary.totalPersonnel} personnel | {kamEbGoldSummary.ebExclusiveCount} EB exclusive</Text>
+                </TouchableOpacity>
+              )}
+              
+              {oltSummary && (
+                <TouchableOpacity 
+                  style={styles.consolidatedReportCard}
+                  onPress={() => router.push('/olt-report')}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.reportCardHeader}>
+                    <View style={[styles.reportIconContainer, { backgroundColor: '#E8F5E9' }]}>
+                      <Server size={22} color="#2E7D32" />
+                    </View>
+                    <Text style={styles.reportCardTitle}>BBM Wise OLT</Text>
+                    <ChevronRight size={18} color="#2E7D32" />
+                  </View>
+                  <View style={styles.reportMetricsRow}>
+                    <View style={styles.reportMetricItem}>
+                      <Users size={16} color="#1565C0" />
+                      <Text style={styles.reportMetricValue}>{oltSummary.uniquePersonnel.toLocaleString()}</Text>
+                      <Text style={styles.reportMetricLabel}>Personnel</Text>
+                    </View>
+                    <View style={styles.reportMetricDivider} />
+                    <View style={styles.reportMetricItem}>
+                      <Wifi size={16} color="#2E7D32" />
+                      <Text style={[styles.reportMetricValue, { color: '#2E7D32' }]}>{oltSummary.uniqueOltIps.toLocaleString()}</Text>
+                      <Text style={styles.reportMetricLabel}>OLT IPs</Text>
+                    </View>
+                    <View style={styles.reportMetricDivider} />
+                    <View style={styles.reportMetricItem}>
+                      <Target size={16} color="#EF6C00" />
+                      <Text style={[styles.reportMetricValue, { color: '#EF6C00' }]}>{oltSummary.totalRecords.toLocaleString()}</Text>
+                      <Text style={styles.reportMetricLabel}>Records</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.reportSubtext}>Network infrastructure tracking</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -1380,6 +1483,73 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 12,
   },
+  reportsRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  consolidatedReportCard: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  reportCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  reportIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  reportCardTitle: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1F2937',
+  },
+  reportMetricsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  reportMetricItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  reportMetricValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1565C0',
+    marginTop: 4,
+  },
+  reportMetricLabel: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginTop: 2,
+  },
+  reportMetricDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: '#E5E7EB',
+  },
+  reportSubtext: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    textAlign: 'center',
+  },
   outstandingCard: {
     flex: 1,
     backgroundColor: '#FFFFFF',
@@ -1563,5 +1733,72 @@ const styles = StyleSheet.create({
   modalEmptyText: {
     fontSize: 14,
     color: Colors.light.textSecondary,
+  },
+  kamEbCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#FFE082',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  kamEbHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  kamEbIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  kamEbHeaderInfo: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  kamEbTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.light.text,
+  },
+  kamEbSubtitle: {
+    fontSize: 12,
+    color: Colors.light.textSecondary,
+    marginTop: 2,
+  },
+  kamEbMetricsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFDE7',
+    borderRadius: 12,
+    padding: 12,
+  },
+  kamEbMetric: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  kamEbMetricIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 6,
+  },
+  kamEbMetricValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.light.text,
+  },
+  kamEbMetricLabel: {
+    fontSize: 10,
+    color: Colors.light.textSecondary,
+    marginTop: 2,
   },
 });

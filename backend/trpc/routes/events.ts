@@ -279,7 +279,24 @@ export const eventsRouter = createTRPCRouter({
         console.log("Admin user - returning all events");
         const allEvents = await db.select().from(events)
           .orderBy(desc(events.createdAt));
-        return allEvents;
+        
+        const adminPersNo = employee[0].persNo;
+        return allEvents.map(event => {
+          const eventTeam = (event.assignedTeam || []) as string[];
+          const isInTeam = adminPersNo && eventTeam.includes(adminPersNo);
+          
+          let ownershipCategory: 'created_by_me' | 'assigned_to_me' | 'subordinate_task' | 'draft_task' = 'subordinate_task';
+          if (event.status === 'draft' && event.createdBy === input.employeeId) {
+            ownershipCategory = 'draft_task';
+          } else if (event.createdBy === input.employeeId) {
+            ownershipCategory = 'created_by_me';
+          } else if (event.assignedTo === input.employeeId || isInTeam) {
+            ownershipCategory = 'assigned_to_me';
+          } else {
+            ownershipCategory = 'subordinate_task';
+          }
+          return { ...event, ownershipCategory, simSold: 0, ftthSold: 0, submissionStatus: 'not_started', teamMembers: [], creatorName: null, assigneeName: null, assigneeDesignation: null };
+        });
       }
       
       // Get the employee's persNo for team assignment check
@@ -404,6 +421,21 @@ export const eventsRouter = createTRPCRouter({
         const simSold = eventAssigns.reduce((sum, a) => sum + a.simSold, 0);
         const ftthSold = eventAssigns.reduce((sum, a) => sum + a.ftthSold, 0);
         
+        // Determine ownership category for this event
+        let ownershipCategory: 'created_by_me' | 'assigned_to_me' | 'subordinate_task' | 'draft_task' = 'subordinate_task';
+        const eventTeam = (event.assignedTeam || []) as string[];
+        const isInTeam = employeePersNo && eventTeam.includes(employeePersNo);
+        
+        if (event.status === 'draft' && event.createdBy === input.employeeId) {
+          ownershipCategory = 'draft_task';
+        } else if (event.createdBy === input.employeeId) {
+          ownershipCategory = 'created_by_me';
+        } else if (event.assignedTo === input.employeeId || isInTeam) {
+          ownershipCategory = 'assigned_to_me';
+        } else {
+          ownershipCategory = 'subordinate_task';
+        }
+        
         // Find the current user's assignment for this event to get their submissionStatus
         const myAssignment = eventAssigns.find(a => a.employeeId === input.employeeId);
         
@@ -439,6 +471,7 @@ export const eventsRouter = createTRPCRouter({
           simSold,
           ftthSold,
           submissionStatus,
+          ownershipCategory,
           teamMembers,
           creatorName: creatorInfo?.name || null,
           assigneeName: assigneeInfo?.name || null,
@@ -466,6 +499,12 @@ export const eventsRouter = createTRPCRouter({
       zone: z.string().min(1),
       startDate: z.string(),
       endDate: z.string(),
+      taskCategory: z.enum(['S&M', 'O&M', 'Finance']).optional(),
+      targetFinLc: z.number().min(0).optional(),
+      targetFinLlFtth: z.number().min(0).optional(),
+      targetFinTower: z.number().min(0).optional(),
+      targetFinGsmPostpaid: z.number().min(0).optional(),
+      targetFinRentBuilding: z.number().min(0).optional(),
       category: z.string().min(1),
       targetSim: z.number().min(0),
       targetFtth: z.number().min(0),
@@ -540,6 +579,7 @@ export const eventsRouter = createTRPCRouter({
         zone: input.zone,
         startDate: new Date(input.startDate),
         endDate: new Date(input.endDate),
+        taskCategory: input.taskCategory || 'S&M',
         category: input.category,
         targetSim: input.targetSim,
         targetFtth: input.targetFtth,
@@ -549,6 +589,11 @@ export const eventsRouter = createTRPCRouter({
         targetFtthDown: input.targetFtthDown || 0,
         targetRouteFail: input.targetRouteFail || 0,
         targetOfcFail: input.targetOfcFail || 0,
+        targetFinLc: input.targetFinLc || 0,
+        targetFinLlFtth: input.targetFinLlFtth || 0,
+        targetFinTower: input.targetFinTower || 0,
+        targetFinGsmPostpaid: input.targetFinGsmPostpaid || 0,
+        targetFinRentBuilding: input.targetFinRentBuilding || 0,
         ebEstHours: input.ebEstHours || 0,
         leaseEstHours: input.leaseEstHours || 0,
         btsDownEstHours: input.btsDownEstHours || 0,
@@ -1182,7 +1227,15 @@ export const eventsRouter = createTRPCRouter({
       const totalSimSold = assignments.reduce((sum, a) => sum + a.simSold, 0);
       const totalFtthSold = assignments.reduce((sum, a) => sum + a.ftthSold, 0);
       
+      // Use targetSim/targetFtth as the max distributable (falls back to allocated if target is 0)
+      const maxSim = event[0].targetSim || event[0].allocatedSim;
+      const maxFtth = event[0].targetFtth || event[0].allocatedFtth;
+      
       return {
+        target: {
+          sim: event[0].targetSim,
+          ftth: event[0].targetFtth,
+        },
         allocated: {
           sim: event[0].allocatedSim,
           ftth: event[0].allocatedFtth,
@@ -1196,8 +1249,8 @@ export const eventsRouter = createTRPCRouter({
           ftth: totalFtthSold,
         },
         remaining: {
-          simToDistribute: event[0].allocatedSim - totalSimDistributed,
-          ftthToDistribute: event[0].allocatedFtth - totalFtthDistributed,
+          simToDistribute: maxSim - totalSimDistributed,
+          ftthToDistribute: maxFtth - totalFtthDistributed,
           simUnsold: totalSimDistributed - totalSimSold,
           ftthUnsold: totalFtthDistributed - totalFtthSold,
         },
@@ -2086,22 +2139,26 @@ export const eventsRouter = createTRPCRouter({
       
       // If no assignment exists, create one (upsert behavior)
       if (!currentAssignment) {
-        // Validate targets against event allocation
+        // Validate targets against event target (not allocated - target is the max to distribute)
         const otherAssignments = allAssignments;
         const currentSimDistributed = otherAssignments.reduce((sum, a) => sum + a.simTarget, 0);
         const currentFtthDistributed = otherAssignments.reduce((sum, a) => sum + a.ftthTarget, 0);
         
-        const newTotalSim = currentSimDistributed + input.simTarget;
-        const newTotalFtth = currentFtthDistributed + input.ftthTarget;
+        const newTotalSim = currentSimDistributed + Math.floor(input.simTarget);
+        const newTotalFtth = currentFtthDistributed + Math.floor(input.ftthTarget);
         
-        if (newTotalSim > event[0].allocatedSim) {
-          const available = event[0].allocatedSim - currentSimDistributed;
-          throw new Error(`Cannot assign ${input.simTarget} SIMs. Only ${available} SIMs available for distribution.`);
+        // Use targetSim/targetFtth for distribution validation
+        const maxSim = event[0].targetSim || event[0].allocatedSim;
+        const maxFtth = event[0].targetFtth || event[0].allocatedFtth;
+        
+        if (maxSim > 0 && newTotalSim > maxSim) {
+          const available = maxSim - currentSimDistributed;
+          throw new Error(`Cannot assign ${input.simTarget} SIMs. Only ${available} SIMs available for distribution (Total target: ${maxSim}).`);
         }
         
-        if (newTotalFtth > event[0].allocatedFtth) {
-          const available = event[0].allocatedFtth - currentFtthDistributed;
-          throw new Error(`Cannot assign ${input.ftthTarget} FTTH. Only ${available} FTTH available for distribution.`);
+        if (maxFtth > 0 && newTotalFtth > maxFtth) {
+          const available = maxFtth - currentFtthDistributed;
+          throw new Error(`Cannot assign ${input.ftthTarget} FTTH. Only ${available} FTTH available for distribution (Total target: ${maxFtth}).`);
         }
         
         // Create new assignment
@@ -2135,17 +2192,21 @@ export const eventsRouter = createTRPCRouter({
       const currentSimDistributed = otherAssignments.reduce((sum, a) => sum + a.simTarget, 0);
       const currentFtthDistributed = otherAssignments.reduce((sum, a) => sum + a.ftthTarget, 0);
       
-      const newTotalSim = currentSimDistributed + input.simTarget;
-      const newTotalFtth = currentFtthDistributed + input.ftthTarget;
+      const newTotalSim = currentSimDistributed + Math.floor(input.simTarget);
+      const newTotalFtth = currentFtthDistributed + Math.floor(input.ftthTarget);
       
-      if (newTotalSim > event[0].allocatedSim) {
-        const available = event[0].allocatedSim - currentSimDistributed;
-        throw new Error(`Cannot assign ${input.simTarget} SIMs. Only ${available} SIMs available for distribution.`);
+      // Use targetSim/targetFtth for distribution validation
+      const maxSim = event[0].targetSim || event[0].allocatedSim;
+      const maxFtth = event[0].targetFtth || event[0].allocatedFtth;
+      
+      if (maxSim > 0 && newTotalSim > maxSim) {
+        const available = maxSim - currentSimDistributed;
+        throw new Error(`Cannot assign ${input.simTarget} SIMs. Only ${available} SIMs available for distribution (Total target: ${maxSim}).`);
       }
       
-      if (newTotalFtth > event[0].allocatedFtth) {
-        const available = event[0].allocatedFtth - currentFtthDistributed;
-        throw new Error(`Cannot assign ${input.ftthTarget} FTTH. Only ${available} FTTH available for distribution.`);
+      if (maxFtth > 0 && newTotalFtth > maxFtth) {
+        const available = maxFtth - currentFtthDistributed;
+        throw new Error(`Cannot assign ${input.ftthTarget} FTTH. Only ${available} FTTH available for distribution (Total target: ${maxFtth}).`);
       }
       
       const result = await db.update(eventAssignments)
