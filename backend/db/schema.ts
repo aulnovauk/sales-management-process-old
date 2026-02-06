@@ -51,10 +51,13 @@ export const notificationTypeEnum = pgEnum('notification_type', [
   'SLA_WARNING',
   'SLA_BREACHED',
   'DEADLINE_WARNING',
-  'TASK_ENDING_TODAY'
+  'TASK_ENDING_TODAY',
+  'FINANCE_COLLECTION_SUBMITTED',
+  'FINANCE_COLLECTION_APPROVED',
+  'FINANCE_COLLECTION_REJECTED'
 ]);
 
-export const auditEntityTypeEnum = pgEnum('audit_entity_type', ['EVENT', 'SALES', 'RESOURCE', 'ISSUE', 'EMPLOYEE']);
+export const auditEntityTypeEnum = pgEnum('audit_entity_type', ['EVENT', 'SALES', 'RESOURCE', 'ISSUE', 'EMPLOYEE', 'FINANCE']);
 
 export const employees = pgTable('employees', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -245,6 +248,27 @@ export const eventSalesEntries = pgTable('event_sales_entries', {
   gpsLatitude: text('gps_latitude'),
   gpsLongitude: text('gps_longitude'),
   remarks: text('remarks'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+export const financeCollectionEntries = pgTable('finance_collection_entries', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  eventId: uuid('event_id').notNull().references(() => events.id),
+  employeeId: uuid('employee_id').notNull().references(() => employees.id),
+  financeType: varchar('finance_type', { length: 50 }).notNull(),
+  amountCollected: integer('amount_collected').default(0).notNull(),
+  paymentMode: varchar('payment_mode', { length: 50 }).notNull(),
+  transactionReference: varchar('transaction_reference', { length: 100 }),
+  customerName: varchar('customer_name', { length: 255 }),
+  customerContact: varchar('customer_contact', { length: 20 }),
+  photos: jsonb('photos').$type<{ uri: string; latitude?: string; longitude?: string; timestamp: string }[]>().default([]),
+  gpsLatitude: text('gps_latitude'),
+  gpsLongitude: text('gps_longitude'),
+  remarks: text('remarks'),
+  approvalStatus: salesReportStatusEnum('approval_status').default('pending').notNull(),
+  reviewedBy: uuid('reviewed_by').references(() => employees.id),
+  reviewedAt: timestamp('reviewed_at'),
+  reviewRemarks: text('review_remarks'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 

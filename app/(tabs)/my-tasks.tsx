@@ -1,7 +1,7 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput, Modal, Alert, ActivityIndicator } from 'react-native';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, TextInput, Modal, Alert, ActivityIndicator, AppState } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, usePathname } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { MapPin, Calendar, Target, Check, X, Plus, Minus, Wrench, Send, RotateCcw, CircleCheck, Hourglass, CircleDot } from 'lucide-react-native';
 import Colors from '@/constants/colors';
@@ -39,24 +39,39 @@ export default function MyTasksScreen() {
     { employeeId: employee?.id || '' },
     {
       enabled: !!employee?.id,
-      staleTime: 5000,
+      staleTime: 0,
       refetchOnMount: 'always',
       refetchOnWindowFocus: true,
     }
   );
 
+  const pathname = usePathname();
+  const prevPathRef = useRef(pathname);
+  useEffect(() => {
+    if (pathname === '/my-tasks' && prevPathRef.current !== '/my-tasks') {
+      refetch();
+    }
+    prevPathRef.current = pathname;
+  }, [pathname, refetch]);
+
   const utils = trpc.useUtils();
   
+  const invalidateAllQueries = useCallback(async () => {
+    await Promise.all([
+      utils.events.getMyAssignedTasks.invalidate(),
+      utils.events.getMyEvents.invalidate(),
+      utils.events.getAll.invalidate(),
+    ]);
+  }, [utils]);
+  
   const submitMutation = trpc.events.submitMyProgress.useMutation({
-    onSuccess: () => {
-      Alert.alert('Success', 'Progress submitted successfully!');
+    onSuccess: async () => {
       setSubmitModalVisible(false);
       setSelectedTask(null);
       setSimSold('');
       setFtthSold('');
-      utils.events.getMyAssignedTasks.invalidate();
-      utils.events.getMyEvents.invalidate();
-      utils.events.getAll.invalidate();
+      await invalidateAllQueries();
+      Alert.alert('Success', 'Progress submitted successfully!');
     },
     onError: (error: any) => {
       Alert.alert('Error', error.message || 'Failed to submit progress');
@@ -64,10 +79,8 @@ export default function MyTasksScreen() {
   });
 
   const maintenanceMutation = trpc.events.updateTaskProgress.useMutation({
-    onSuccess: () => {
-      utils.events.getMyAssignedTasks.invalidate();
-      utils.events.getMyEvents.invalidate();
-      utils.events.getAll.invalidate();
+    onSuccess: async () => {
+      await invalidateAllQueries();
     },
     onError: (error: any) => {
       Alert.alert('Error', error.message || 'Failed to update maintenance progress');
@@ -75,11 +88,9 @@ export default function MyTasksScreen() {
   });
 
   const submitForReviewMutation = trpc.events.submitTaskForReview.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
+      await invalidateAllQueries();
       Alert.alert('Success', 'Task submitted for review!');
-      utils.events.getMyAssignedTasks.invalidate();
-      utils.events.getMyEvents.invalidate();
-      utils.events.getAll.invalidate();
     },
     onError: (error: any) => {
       Alert.alert('Error', error.message || 'Failed to submit task');
@@ -152,12 +163,17 @@ export default function MyTasksScreen() {
   const handleSubmit = () => {
     if (!selectedTask || !employee?.id) return;
     
-    submitMutation.mutate({
+    const data: any = {
       employeeId: employee.id,
       eventId: selectedTask.id,
-      simSold: parseInt(simSold) || 0,
-      ftthSold: parseInt(ftthSold) || 0,
-    });
+    };
+    if (selectedTask.categories.hasSIM && selectedTask.myTargets.sim > 0) {
+      data.simSold = parseInt(simSold) || 0;
+    }
+    if (selectedTask.categories.hasFTTH && selectedTask.myTargets.ftth > 0) {
+      data.ftthSold = parseInt(ftthSold) || 0;
+    }
+    submitMutation.mutate(data);
   };
 
   const incrementValue = (setter: React.Dispatch<React.SetStateAction<string>>, current: string) => {

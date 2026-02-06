@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { eq, and, desc, gte, lte, sql, or, inArray } from "drizzle-orm";
 import { createTRPCRouter, publicProcedure } from "../create-context";
-import { db, events, employees, auditLogs, eventAssignments, eventSalesEntries, eventSubtasks, employeeMaster, resources, resourceAllocations } from "@/backend/db";
+import { db, events, employees, auditLogs, eventAssignments, eventSalesEntries, eventSubtasks, employeeMaster, resources, resourceAllocations, financeCollectionEntries } from "@/backend/db";
 import { 
   notifyEventAssignment, 
   notifyTaskSubmitted, 
@@ -295,7 +295,7 @@ export const eventsRouter = createTRPCRouter({
           } else {
             ownershipCategory = 'subordinate_task';
           }
-          return { ...event, ownershipCategory, simSold: 0, ftthSold: 0, submissionStatus: 'not_started', teamMembers: [], creatorName: null, assigneeName: null, assigneeDesignation: null };
+          return { ...event, ownershipCategory, simSold: 0, ftthSold: 0, submissionStatus: 'not_started', teamMembers: [], creatorName: null, assigneeName: null, assigneeDesignation: null, myAssignment: null };
         });
       }
       
@@ -476,6 +476,12 @@ export const eventsRouter = createTRPCRouter({
           creatorName: creatorInfo?.name || null,
           assigneeName: assigneeInfo?.name || null,
           assigneeDesignation: assigneeInfo?.designation || null,
+          myAssignment: myAssignment ? {
+            simTarget: myAssignment.simTarget,
+            ftthTarget: myAssignment.ftthTarget,
+            simSold: myAssignment.simSold,
+            ftthSold: myAssignment.ftthSold,
+          } : null,
         };
       });
       
@@ -995,6 +1001,10 @@ export const eventsRouter = createTRPCRouter({
         .where(eq(eventSalesEntries.eventId, input.id))
         .orderBy(desc(eventSalesEntries.createdAt));
       
+      const financeEntries = await db.select().from(financeCollectionEntries)
+        .where(eq(financeCollectionEntries.eventId, input.id))
+        .orderBy(desc(financeCollectionEntries.createdAt));
+      
       const subtasks = await db.select().from(eventSubtasks)
         .where(eq(eventSubtasks.eventId, input.id))
         .orderBy(desc(eventSubtasks.createdAt));
@@ -1194,12 +1204,14 @@ export const eventsRouter = createTRPCRouter({
           assignedToEmployee,
           teamWithAllocations,
           salesEntries,
+          financeEntries,
           subtasks: subtasksWithAssignees,
           slaStatus,
           summary: {
             totalSimsSold,
             totalFtthSold,
             totalEntries: salesEntries.length,
+            totalFinanceEntries: financeEntries.length,
             teamCount: assignments.length,
             subtaskStats,
           },
@@ -1519,6 +1531,383 @@ export const eventsRouter = createTRPCRouter({
         .where(eq(eventSalesEntries.eventId, input.eventId))
         .orderBy(desc(eventSalesEntries.createdAt));
       return entries;
+    }),
+
+  submitFinanceCollection: publicProcedure
+    .input(z.object({
+      eventId: z.string().uuid(),
+      employeeId: z.string().uuid(),
+      financeType: z.string(),
+      amountCollected: z.number().min(1),
+      paymentMode: z.string(),
+      transactionReference: z.string().optional(),
+      customerName: z.string().optional(),
+      customerContact: z.string().optional(),
+      remarks: z.string().optional(),
+      photos: z.array(z.object({
+        uri: z.string(),
+        latitude: z.string().optional(),
+        longitude: z.string().optional(),
+        timestamp: z.string(),
+      })).optional(),
+      gpsLatitude: z.string().optional(),
+      gpsLongitude: z.string().optional(),
+    }))
+    .mutation(async ({ input }) => {
+      console.log("Submitting finance collection:", input);
+      
+      const VALID_FINANCE_TYPES = ['FIN_LC', 'FIN_LL_FTTH', 'FIN_TOWER', 'FIN_GSM_POSTPAID', 'FIN_RENT_BUILDING'];
+      const VALID_PAYMENT_MODES = ['CASH', 'CHEQUE', 'NEFT', 'UPI', 'CARD', 'DD', 'OTHER'];
+      
+      if (!VALID_FINANCE_TYPES.includes(input.financeType)) {
+        throw new Error(`Invalid finance type: ${input.financeType}`);
+      }
+      
+      if (!VALID_PAYMENT_MODES.includes(input.paymentMode)) {
+        throw new Error(`Invalid payment mode: ${input.paymentMode}`);
+      }
+      
+      if (input.paymentMode !== 'CASH' && !input.transactionReference) {
+        throw new Error(`Transaction reference is required for ${input.paymentMode} payments`);
+      }
+      
+      const event = await db.select().from(events).where(eq(events.id, input.eventId));
+      if (!event[0]) throw new Error("Event not found");
+      
+      if (event[0].status === 'completed' || event[0].status === 'cancelled') {
+        throw new Error(`Cannot submit collection for ${event[0].status} event`);
+      }
+      
+      if (!event[0].category?.includes(input.financeType)) {
+        throw new Error(`This event does not support ${input.financeType} collection type`);
+      }
+      
+      const assignment = await db.select().from(eventAssignments)
+        .where(and(
+          eq(eventAssignments.eventId, input.eventId),
+          eq(eventAssignments.employeeId, input.employeeId)
+        ));
+      
+      const isEventManager = event[0].assignedTo === input.employeeId;
+      
+      if (!assignment[0] && !isEventManager) {
+        throw new Error("You are not assigned to this event. Please contact the event manager.");
+      }
+      
+      const targetField = input.financeType === 'FIN_LC' ? 'targetFinLc' :
+                         input.financeType === 'FIN_LL_FTTH' ? 'targetFinLlFtth' :
+                         input.financeType === 'FIN_TOWER' ? 'targetFinTower' :
+                         input.financeType === 'FIN_GSM_POSTPAID' ? 'targetFinGsmPostpaid' :
+                         'targetFinRentBuilding';
+      const collectedField = input.financeType === 'FIN_LC' ? 'finLcCollected' :
+                            input.financeType === 'FIN_LL_FTTH' ? 'finLlFtthCollected' :
+                            input.financeType === 'FIN_TOWER' ? 'finTowerCollected' :
+                            input.financeType === 'FIN_GSM_POSTPAID' ? 'finGsmPostpaidCollected' :
+                            'finRentBuildingCollected';
+      
+      const currentTarget = (event[0] as any)[targetField] || 0;
+      const currentCollected = (event[0] as any)[collectedField] || 0;
+      const newTotal = currentCollected + input.amountCollected;
+      
+      if (newTotal > currentTarget && currentTarget > 0) {
+        console.log(`[FINANCE] Over-collection warning: ${input.financeType} target=${currentTarget}, collected=${currentCollected}, new entry=${input.amountCollected}, total=${newTotal}`);
+      }
+      
+      const result = await db.insert(financeCollectionEntries).values({
+        eventId: input.eventId,
+        employeeId: input.employeeId,
+        financeType: input.financeType,
+        amountCollected: input.amountCollected,
+        paymentMode: input.paymentMode,
+        transactionReference: input.transactionReference,
+        customerName: input.customerName,
+        customerContact: input.customerContact,
+        photos: input.photos || [],
+        gpsLatitude: input.gpsLatitude,
+        gpsLongitude: input.gpsLongitude,
+        remarks: input.remarks,
+        approvalStatus: 'pending',
+      }).returning();
+      
+      // Update the event's collected amount
+      const updateData: Record<string, number> = {};
+      updateData[collectedField] = newTotal;
+      await db.update(events).set(updateData).where(eq(events.id, input.eventId));
+      
+      console.log(`[FINANCE] Updated ${collectedField} for event ${input.eventId}: ${currentCollected} -> ${newTotal}`);
+      
+      await db.insert(auditLogs).values({
+        action: 'SUBMIT_FINANCE_COLLECTION',
+        entityType: 'FINANCE',
+        entityId: result[0].id,
+        performedBy: input.employeeId,
+        details: { eventId: input.eventId, financeType: input.financeType, amountCollected: input.amountCollected, paymentMode: input.paymentMode, status: 'pending' },
+      });
+      
+      // Get submitter name for notification
+      const submitter = await db.select().from(employees).where(eq(employees.id, input.employeeId)).limit(1);
+      const submitterName = submitter[0]?.name || 'Unknown';
+      
+      // Send notification to event creator for review
+      if (event[0].assignedTo && event[0].assignedTo !== input.employeeId) {
+        await db.insert(notifications).values({
+          userId: event[0].assignedTo,
+          type: 'FINANCE_COLLECTION_SUBMITTED',
+          title: 'Finance Collection Pending Review',
+          message: `${submitterName} submitted ₹${input.amountCollected.toLocaleString('en-IN')} collection (${input.financeType.replace('FIN_', '').replace(/_/g, ' ')}) for "${event[0].title}". Review required.`,
+          relatedEventId: input.eventId,
+          data: { 
+            entryId: result[0].id, 
+            financeType: input.financeType, 
+            amount: input.amountCollected,
+            submitterName,
+            paymentMode: input.paymentMode 
+          },
+        });
+      }
+      
+      return result[0];
+    }),
+
+  getFinanceCollectionEntries: publicProcedure
+    .input(z.object({ eventId: z.string().uuid() }))
+    .query(async ({ input }) => {
+      console.log("Fetching finance collection entries:", input.eventId);
+      const entries = await db.select({
+        entry: financeCollectionEntries,
+        submitterName: employees.name,
+        submitterDesignation: employees.designation,
+      })
+      .from(financeCollectionEntries)
+      .leftJoin(employees, eq(financeCollectionEntries.employeeId, employees.id))
+      .where(eq(financeCollectionEntries.eventId, input.eventId))
+      .orderBy(desc(financeCollectionEntries.createdAt));
+      
+      return entries.map(e => ({
+        ...e.entry,
+        submitterName: e.submitterName,
+        submitterDesignation: e.submitterDesignation,
+      }));
+    }),
+    
+  getPendingFinanceCollections: publicProcedure
+    .input(z.object({ 
+      reviewerId: z.string().uuid(),
+      financeType: z.string().optional(),
+    }))
+    .query(async ({ input }) => {
+      console.log("Fetching pending finance collections for reviewer:", input.reviewerId);
+      
+      // Check if user has management role
+      const reviewer = await db.select().from(employees).where(eq(employees.id, input.reviewerId)).limit(1);
+      if (!reviewer[0] || !['ADMIN', 'GM', 'CGM', 'DGM', 'AGM'].includes(reviewer[0].role)) {
+        throw new Error('Only management users can review finance collections');
+      }
+      
+      // For senior managers (ADMIN, GM, CGM), show all pending collections in their circle
+      // For DGM/AGM, show only their own events' collections
+      const isTopManagement = ['ADMIN', 'GM', 'CGM'].includes(reviewer[0].role);
+      
+      let userEvents: { id: string; title: string }[];
+      
+      if (isTopManagement) {
+        // Get all finance events in reviewer's circle (or all for ADMIN)
+        if (reviewer[0].role === 'ADMIN') {
+          userEvents = await db.select({ id: events.id, title: events.title })
+            .from(events)
+            .where(sql`${events.taskCategory} LIKE 'FIN_%'`);
+        } else {
+          userEvents = await db.select({ id: events.id, title: events.title })
+            .from(events)
+            .where(and(
+              sql`${events.taskCategory} LIKE 'FIN_%'`,
+              eq(events.circle, reviewer[0].circle || '')
+            ));
+        }
+      } else {
+        // DGM/AGM see only their own events
+        userEvents = await db.select({ id: events.id, title: events.title })
+          .from(events)
+          .where(eq(events.assignedTo, input.reviewerId));
+      }
+      
+      if (userEvents.length === 0) return [];
+      
+      const eventIds = userEvents.map(e => e.id);
+      const eventTitleMap = new Map(userEvents.map(e => [e.id, e.title]));
+      
+      // Build filter conditions
+      const conditions = [
+        sql`${financeCollectionEntries.eventId} IN ${eventIds}`,
+        eq(financeCollectionEntries.approvalStatus, 'pending')
+      ];
+      
+      if (input.financeType) {
+        conditions.push(eq(financeCollectionEntries.financeType, input.financeType));
+      }
+      
+      // Get pending finance entries for these events
+      const pendingEntries = await db.select({
+        entry: financeCollectionEntries,
+        submitterName: employees.name,
+        submitterDesignation: employees.designation,
+        submitterCircle: employees.circle,
+      })
+      .from(financeCollectionEntries)
+      .leftJoin(employees, eq(financeCollectionEntries.employeeId, employees.id))
+      .where(and(...conditions))
+      .orderBy(desc(financeCollectionEntries.createdAt))
+      .limit(100);
+      
+      return pendingEntries.map(e => ({
+        ...e.entry,
+        submitterName: e.submitterName,
+        submitterDesignation: e.submitterDesignation,
+        submitterCircle: e.submitterCircle,
+        eventTitle: eventTitleMap.get(e.entry.eventId) || 'Unknown Event',
+      }));
+    }),
+    
+  approveFinanceCollection: publicProcedure
+    .input(z.object({
+      entryId: z.string().uuid(),
+      reviewerId: z.string().uuid(),
+      remarks: z.string().optional(),
+    }))
+    .mutation(async ({ input }) => {
+      console.log("Approving finance collection:", input.entryId);
+      
+      // Check if user has management role
+      const reviewer = await db.select().from(employees).where(eq(employees.id, input.reviewerId)).limit(1);
+      if (!reviewer[0] || !['ADMIN', 'GM', 'CGM', 'DGM', 'AGM'].includes(reviewer[0].role)) {
+        throw new Error('Only management users can approve finance collections');
+      }
+      
+      // Get the entry
+      const entry = await db.select().from(financeCollectionEntries)
+        .where(eq(financeCollectionEntries.id, input.entryId)).limit(1);
+      
+      if (!entry[0]) throw new Error('Finance collection entry not found');
+      if (entry[0].approvalStatus !== 'pending') {
+        throw new Error(`Entry already ${entry[0].approvalStatus}`);
+      }
+      
+      // Verify reviewer owns the event
+      const event = await db.select().from(events).where(eq(events.id, entry[0].eventId)).limit(1);
+      if (!event[0]) throw new Error('Event not found');
+      if (event[0].assignedTo !== input.reviewerId && !['ADMIN', 'GM', 'CGM'].includes(reviewer[0].role)) {
+        throw new Error('You can only approve collections for events you manage');
+      }
+      
+      // Update entry status
+      await db.update(financeCollectionEntries)
+        .set({
+          approvalStatus: 'approved',
+          reviewedBy: input.reviewerId,
+          reviewedAt: new Date(),
+          reviewRemarks: input.remarks,
+        })
+        .where(eq(financeCollectionEntries.id, input.entryId));
+      
+      // Update event totals
+      const updateFields: Record<string, any> = { updatedAt: new Date() };
+      if (entry[0].financeType === 'FIN_LC') {
+        updateFields.finLcCollected = (event[0].finLcCollected || 0) + entry[0].amountCollected;
+      } else if (entry[0].financeType === 'FIN_LL_FTTH') {
+        updateFields.finLlFtthCollected = (event[0].finLlFtthCollected || 0) + entry[0].amountCollected;
+      } else if (entry[0].financeType === 'FIN_TOWER') {
+        updateFields.finTowerCollected = (event[0].finTowerCollected || 0) + entry[0].amountCollected;
+      } else if (entry[0].financeType === 'FIN_GSM_POSTPAID') {
+        updateFields.finGsmPostpaidCollected = (event[0].finGsmPostpaidCollected || 0) + entry[0].amountCollected;
+      } else if (entry[0].financeType === 'FIN_RENT_BUILDING') {
+        updateFields.finRentBuildingCollected = (event[0].finRentBuildingCollected || 0) + entry[0].amountCollected;
+      }
+      
+      await db.update(events).set(updateFields).where(eq(events.id, entry[0].eventId));
+      
+      // Create audit log
+      await db.insert(auditLogs).values({
+        action: 'APPROVE_FINANCE_COLLECTION',
+        entityType: 'FINANCE',
+        entityId: input.entryId,
+        performedBy: input.reviewerId,
+        details: { eventId: entry[0].eventId, amount: entry[0].amountCollected, financeType: entry[0].financeType },
+      });
+      
+      // Notify the submitter
+      await db.insert(notifications).values({
+        userId: entry[0].employeeId,
+        type: 'FINANCE_COLLECTION_APPROVED',
+        title: 'Collection Approved',
+        message: `Your ₹${entry[0].amountCollected.toLocaleString('en-IN')} collection for "${event[0].title}" has been approved.`,
+        relatedEventId: entry[0].eventId,
+        data: { entryId: input.entryId, amount: entry[0].amountCollected },
+      });
+      
+      return { success: true };
+    }),
+    
+  rejectFinanceCollection: publicProcedure
+    .input(z.object({
+      entryId: z.string().uuid(),
+      reviewerId: z.string().uuid(),
+      remarks: z.string().min(1, 'Rejection reason is required'),
+    }))
+    .mutation(async ({ input }) => {
+      console.log("Rejecting finance collection:", input.entryId);
+      
+      // Check if user has management role
+      const reviewer = await db.select().from(employees).where(eq(employees.id, input.reviewerId)).limit(1);
+      if (!reviewer[0] || !['ADMIN', 'GM', 'CGM', 'DGM', 'AGM'].includes(reviewer[0].role)) {
+        throw new Error('Only management users can reject finance collections');
+      }
+      
+      // Get the entry
+      const entry = await db.select().from(financeCollectionEntries)
+        .where(eq(financeCollectionEntries.id, input.entryId)).limit(1);
+      
+      if (!entry[0]) throw new Error('Finance collection entry not found');
+      if (entry[0].approvalStatus !== 'pending') {
+        throw new Error(`Entry already ${entry[0].approvalStatus}`);
+      }
+      
+      // Verify reviewer owns the event
+      const event = await db.select().from(events).where(eq(events.id, entry[0].eventId)).limit(1);
+      if (!event[0]) throw new Error('Event not found');
+      if (event[0].assignedTo !== input.reviewerId && !['ADMIN', 'GM', 'CGM'].includes(reviewer[0].role)) {
+        throw new Error('You can only reject collections for events you manage');
+      }
+      
+      // Update entry status
+      await db.update(financeCollectionEntries)
+        .set({
+          approvalStatus: 'rejected',
+          reviewedBy: input.reviewerId,
+          reviewedAt: new Date(),
+          reviewRemarks: input.remarks,
+        })
+        .where(eq(financeCollectionEntries.id, input.entryId));
+      
+      // Create audit log
+      await db.insert(auditLogs).values({
+        action: 'REJECT_FINANCE_COLLECTION',
+        entityType: 'FINANCE',
+        entityId: input.entryId,
+        performedBy: input.reviewerId,
+        details: { eventId: entry[0].eventId, amount: entry[0].amountCollected, reason: input.remarks },
+      });
+      
+      // Notify the submitter
+      await db.insert(notifications).values({
+        userId: entry[0].employeeId,
+        type: 'FINANCE_COLLECTION_REJECTED',
+        title: 'Collection Rejected',
+        message: `Your ₹${entry[0].amountCollected.toLocaleString('en-IN')} collection for "${event[0].title}" was rejected. Reason: ${input.remarks}`,
+        relatedEventId: entry[0].eventId,
+        data: { entryId: input.entryId, amount: entry[0].amountCollected, reason: input.remarks },
+      });
+      
+      return { success: true };
     }),
 
   getMyAssignedEvents: publicProcedure
@@ -2425,15 +2814,15 @@ export const eventsRouter = createTRPCRouter({
       
       return myEvents.map(event => {
         const assignment = assignmentMap.get(event.id);
-        const categories = (event.category || '').split(',').filter(Boolean);
-        const hasSIM = categories.includes('SIM');
-        const hasFTTH = categories.includes('FTTH');
-        const hasLease = categories.includes('LEASE_CIRCUIT');
-        const hasBtsDown = categories.includes('BTS_DOWN');
-        const hasRouteFail = categories.includes('ROUTE_FAIL');
-        const hasFtthDown = categories.includes('FTTH_DOWN');
-        const hasOfcFail = categories.includes('OFC_FAIL');
-        const hasEb = categories.includes('EB');
+        const eventCategories = (event.category || '').split(',').filter(Boolean);
+        const eventHasSIM = eventCategories.includes('SIM');
+        const eventHasFTTH = eventCategories.includes('FTTH');
+        const eventHasLease = eventCategories.includes('LEASE_CIRCUIT');
+        const eventHasBtsDown = eventCategories.includes('BTS_DOWN');
+        const eventHasRouteFail = eventCategories.includes('ROUTE_FAIL');
+        const eventHasFtthDown = eventCategories.includes('FTTH_DOWN');
+        const eventHasOfcFail = eventCategories.includes('OFC_FAIL');
+        const eventHasEb = eventCategories.includes('EB');
         
         const teamSize = (event.assignedTeam as string[] || []).length || 1;
         const teamIndex = employeePersNo ? (event.assignedTeam as string[] || []).indexOf(employeePersNo) : 0;
@@ -2445,7 +2834,6 @@ export const eventsRouter = createTRPCRouter({
           return effectiveIndex < remainder ? base + 1 : base;
         };
         
-        // Determine employee's role in this task
         const isCreator = event.createdBy === input.employeeId;
         const isManager = event.assignedTo === input.employeeId;
         const isTeamMember = employeePersNo ? (event.assignedTeam as string[] || []).includes(employeePersNo) : false;
@@ -2456,6 +2844,38 @@ export const eventsRouter = createTRPCRouter({
         else if (isManager) myRole = 'manager';
         else if (hasDirectAssignment) myRole = 'assigned';
         
+        const mySimTarget = assignment
+          ? assignment.simTarget
+          : (eventHasSIM ? getDistributedTarget(event.targetSim) : 0);
+        const myFtthTarget = assignment
+          ? assignment.ftthTarget
+          : (eventHasFTTH ? getDistributedTarget(event.targetFtth) : 0);
+        const myLeaseTarget = eventHasLease ? getDistributedTarget(event.targetLease ?? 0) : 0;
+        const myBtsDownTarget = eventHasBtsDown ? getDistributedTarget(event.targetBtsDown ?? 0) : 0;
+        const myRouteFailTarget = eventHasRouteFail ? getDistributedTarget(event.targetRouteFail ?? 0) : 0;
+        const myFtthDownTarget = eventHasFtthDown ? getDistributedTarget(event.targetFtthDown ?? 0) : 0;
+        const myOfcFailTarget = eventHasOfcFail ? getDistributedTarget(event.targetOfcFail ?? 0) : 0;
+        const myEbTarget = eventHasEb ? getDistributedTarget(event.targetEb ?? 0) : 0;
+        
+        const hasSIM = assignment ? assignment.simTarget > 0 : eventHasSIM;
+        const hasFTTH = assignment ? assignment.ftthTarget > 0 : eventHasFTTH;
+        const hasLease = assignment ? false : eventHasLease;
+        const hasBtsDown = assignment ? false : eventHasBtsDown;
+        const hasRouteFail = assignment ? false : eventHasRouteFail;
+        const hasFtthDown = assignment ? false : eventHasFtthDown;
+        const hasOfcFail = assignment ? false : eventHasOfcFail;
+        const hasEb = assignment ? false : eventHasEb;
+        
+        const assignedCategoryLabels: string[] = [];
+        if (hasSIM) assignedCategoryLabels.push('SIM');
+        if (hasFTTH) assignedCategoryLabels.push('FTTH');
+        if (hasLease) assignedCategoryLabels.push('LEASE_CIRCUIT');
+        if (hasBtsDown) assignedCategoryLabels.push('BTS_DOWN');
+        if (hasRouteFail) assignedCategoryLabels.push('ROUTE_FAIL');
+        if (hasFtthDown) assignedCategoryLabels.push('FTTH_DOWN');
+        if (hasOfcFail) assignedCategoryLabels.push('OFC_FAIL');
+        if (hasEb) assignedCategoryLabels.push('EB');
+        
         return {
           id: event.id,
           name: event.name,
@@ -2465,40 +2885,40 @@ export const eventsRouter = createTRPCRouter({
           startDate: event.startDate,
           endDate: event.endDate,
           status: event.status,
-          category: event.category,
+          category: assignedCategoryLabels.join(','),
           myRole,
           isCreator,
           isManager,
           isTeamMember,
           hasDirectAssignment,
-          assignmentId: assignment?.id || null,
+          assignmentId: assignment?.id ?? null,
           myTargets: {
-            sim: assignment?.simTarget || (hasSIM ? getDistributedTarget(event.targetSim) : 0),
-            ftth: assignment?.ftthTarget || (hasFTTH ? getDistributedTarget(event.targetFtth) : 0),
-            lease: hasLease ? getDistributedTarget(event.targetLease || 0) : 0,
-            btsDown: hasBtsDown ? getDistributedTarget(event.targetBtsDown || 0) : 0,
-            routeFail: hasRouteFail ? getDistributedTarget(event.targetRouteFail || 0) : 0,
-            ftthDown: hasFtthDown ? getDistributedTarget(event.targetFtthDown || 0) : 0,
-            ofcFail: hasOfcFail ? getDistributedTarget(event.targetOfcFail || 0) : 0,
-            eb: hasEb ? getDistributedTarget(event.targetEb || 0) : 0,
+            sim: mySimTarget,
+            ftth: myFtthTarget,
+            lease: myLeaseTarget,
+            btsDown: myBtsDownTarget,
+            routeFail: myRouteFailTarget,
+            ftthDown: myFtthDownTarget,
+            ofcFail: myOfcFailTarget,
+            eb: myEbTarget,
           },
           myProgress: {
-            simSold: assignment?.simSold || 0,
-            ftthSold: assignment?.ftthSold || 0,
+            simSold: assignment?.simSold ?? 0,
+            ftthSold: assignment?.ftthSold ?? 0,
           },
           maintenanceProgress: {
-            lease: event.leaseCompleted || 0,
-            leaseTarget: event.targetLease || 0,
-            btsDown: event.btsDownCompleted || 0,
-            btsDownTarget: event.targetBtsDown || 0,
-            routeFail: event.routeFailCompleted || 0,
-            routeFailTarget: event.targetRouteFail || 0,
-            ftthDown: event.ftthDownCompleted || 0,
-            ftthDownTarget: event.targetFtthDown || 0,
-            ofcFail: event.ofcFailCompleted || 0,
-            ofcFailTarget: event.targetOfcFail || 0,
-            eb: event.ebCompleted || 0,
-            ebTarget: event.targetEb || 0,
+            lease: event.leaseCompleted ?? 0,
+            leaseTarget: event.targetLease ?? 0,
+            btsDown: event.btsDownCompleted ?? 0,
+            btsDownTarget: event.targetBtsDown ?? 0,
+            routeFail: event.routeFailCompleted ?? 0,
+            routeFailTarget: event.targetRouteFail ?? 0,
+            ftthDown: event.ftthDownCompleted ?? 0,
+            ftthDownTarget: event.targetFtthDown ?? 0,
+            ofcFail: event.ofcFailCompleted ?? 0,
+            ofcFailTarget: event.targetOfcFail ?? 0,
+            eb: event.ebCompleted ?? 0,
+            ebTarget: event.targetEb ?? 0,
           },
           categories: {
             hasSIM,
@@ -2511,25 +2931,23 @@ export const eventsRouter = createTRPCRouter({
             hasEb,
           },
           submissionStatus: (() => {
-            // If already has a submission status, use it
             if (assignment?.submissionStatus && assignment.submissionStatus !== 'not_started') {
               return assignment.submissionStatus;
             }
-            // Calculate effective status based on actual progress
             const hasProgress = 
-              (assignment?.simSold || 0) > 0 || 
-              (assignment?.ftthSold || 0) > 0 ||
-              (event.leaseCompleted || 0) > 0 ||
-              (event.btsDownCompleted || 0) > 0 ||
-              (event.routeFailCompleted || 0) > 0 ||
-              (event.ftthDownCompleted || 0) > 0 ||
-              (event.ofcFailCompleted || 0) > 0 ||
-              (event.ebCompleted || 0) > 0;
+              (assignment?.simSold ?? 0) > 0 || 
+              (assignment?.ftthSold ?? 0) > 0 ||
+              (event.leaseCompleted ?? 0) > 0 ||
+              (event.btsDownCompleted ?? 0) > 0 ||
+              (event.routeFailCompleted ?? 0) > 0 ||
+              (event.ftthDownCompleted ?? 0) > 0 ||
+              (event.ofcFailCompleted ?? 0) > 0 ||
+              (event.ebCompleted ?? 0) > 0;
             return hasProgress ? 'in_progress' : 'not_started';
           })(),
-          submittedAt: assignment?.submittedAt || null,
-          reviewedAt: assignment?.reviewedAt || null,
-          rejectionReason: assignment?.rejectionReason || null,
+          submittedAt: assignment?.submittedAt ?? null,
+          reviewedAt: assignment?.reviewedAt ?? null,
+          rejectionReason: assignment?.rejectionReason ?? null,
         };
       });
     }),
